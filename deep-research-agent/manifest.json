@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "toolpkg_id": "deep_research_agent_v3_2_v4_local",
+  "version": "3.3.0",
+  "main": "main.js",
+  "display_name": {
+    "zh": "深度搜索 v3.3-V4",
+    "en": "DeepResearch v3.3-V4"
+  },
+  "description": {
+    "zh": "基于DeepSeek V4统一调度。14阶段自动化研究流水线，15条质量门控，中英双轨自适应搜索，双权威体系，六级置信度标记，因果链推演引擎。三态菜单触发，支持计划模式集成。",
+    "en": "DeepSeek V4 unified scheduling. 14-stage automated research pipeline, 15 quality gates, CN/EN dual-track adaptive search, dual authority system, 6-level confidence tagging, causal chain engine. Three-state menu toggle, plan mode compatible."
+  },
+  "enabled_by_default": true,
+  "subpackages": [
+    {
+      "id": "deep_research_tools",
+      "entry": "deep_research_agent_v3_2_v4.js",
+      "enabled_by_default": true,
+      "display_name": {
+        "zh": "深度搜索工具 v3.3-V4",
+        "en": "DeepResearch Tools v3.3-V4"
+      },
+      "description": {
+        "zh": "10个工具：start_research / classify_authority / check_quality_gate / tag_confidence / deep_analyze / create_checkpoint / sync_to_plan / orchestrate_research / ingest_source / advance_search_round",
+        "en": "10 tools"
+      }
+    }
+  ]
+}
