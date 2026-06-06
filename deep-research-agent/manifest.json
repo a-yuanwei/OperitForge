@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "toolpkg_id": "deep_research_agent_v3_2_v4_local",
+  "toolpkg_id": "deep_research_agent_v3_2_v4",
   "version": "3.3.0",
   "main": "main.js",
   "display_name": {
