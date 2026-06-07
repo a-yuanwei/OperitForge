@@ -8,7 +8,7 @@
     "en": "DeepResearch v4.4.2"
   },
   "description": {
-    "zh": "菜单负责写请求，调度器负责消费，流水线负责执行，锁负责确保仅执行一次。14 阶段自动化研究流水线，15 条质量门控，中英双轨自适应搜索，双权威体系，六级置信度标记，因果链推演引擎。二进制菜单触发（OFF↔FORCE），五态 UI 反馈（OFF/READY/RUNNING/DONE/FAIL），持久互斥锁 + 60s 幂等保护。v3.7.0 新增 AI 探针 check_research_status（零参数·始终可调用），v3.8.0 追加 summary 字段提升可读性。支持计划模式集成。v4.4.2 修复 GatePolicy.enabledBy / resume_research 门控 / 锛限 JSON.parse 等多项缺陷。",
+    "zh": "菜单负责写请求，调度器负责消费，流水线负责执行，锁负责确保仅执行一次。14 阶段自动化研究流水线，15 条质量门控，中英双轨自适应搜索，双权威体系，六级置信度标记，因果链推演引擎。二进制菜单触发（OFF↔FORCE），五态 UI 反馈（OFF/READY/RUNNING/DONE/FAIL），持久互斥锁 + 60s 幂等保护。v3.7.0 新增 AI 探针 check_research_status（零参数·始终可调用），v3.8.0 追加 summary 字段提升可读性。支持计划模式集成。v4.4.2 修复 GatePolicy.enabledBy / resume_research 门控 / 冗余 JSON.parse 等多项缺陷。",
     "en": "Menu writes requests, orchestrator consumes them, pipeline executes, and the lock guarantees exactly-once execution. 14-stage automated research pipeline, 15 quality gates, CN/EN dual-track adaptive search, dual-authority system, 6-level confidence tagging, and a causal-chain reasoning engine. Binary menu trigger (OFF↔FORCE), five-state UI feedback (OFF/READY/RUNNING/DONE/FAIL), persistent mutex + 60s idempotency guard. v3.7.0 adds AI probe check_research_status (zero params · always callable) returning structured status block. Plan-mode compatible. v4.4.2 fixes GatePolicy.enabledBy / resume_research toggle gate / redundant JSON.parse and more."
   },
   "enabled_by_default": true,

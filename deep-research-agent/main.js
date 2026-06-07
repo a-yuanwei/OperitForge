@@ -14,7 +14,7 @@ exports.registerToolPkg = exports.onInputMenuToggle = void 0;
 //   Pipeline executes them. Lock guarantees exactly-once execution.
 //
 // Layer 1 — Message: always pass through.
-//   onMessageProcessing is intentionally not registered.
+//   onMessageProcessing is a backup injection path registered below.
 //   The hook is a filter, not a modifier. Messages are never intercepted.
 //
 // Layer 2 — Menu: writes execution requests (runToken pattern).
@@ -239,9 +239,8 @@ function onInputMenuToggle(input) {
 
     try {
         if (action === "toggle") {
-            // Accept any of: menu item id, registration id, or empty (platform may vary)
             var tid = payload.toggleId || "";
-            if (tid === CONFIG.FEATURE_KEY || tid === CONFIG.TOGGLE_ID || tid === "") {
+            if (tid === CONFIG.FEATURE_KEY || tid === CONFIG.TOGGLE_ID || tid === "" || tid.indexOf("deep_research") !== -1) {
                 var currentMode = readMode(context);
                 if (currentMode === MODES.OFF) {
                     writeMode(context, MODES.FORCE);
@@ -249,24 +248,31 @@ function onInputMenuToggle(input) {
                     writeBool(context, CONFIG.LAST_DONE_KEY, false);
                     writeBool(context, CONFIG.LAST_FAILED_KEY, false);
                     writeBool(context, CONFIG.EXEC_LOCK_KEY, true);
-                    writeBool(context, CONFIG.AWAIT_INPUT_KEY, true); // v4.4.2: arm auto-execution on next user message
-                    log("toggle: OFF → FORCE (run pending, lock set, results cleared)");
+                    writeBool(context, CONFIG.AWAIT_INPUT_KEY, true);
+                    log("toggle: OFF → FORCE");
                 } else {
                     writeMode(context, MODES.OFF);
                     writeBool(context, CONFIG.RUN_PENDING_KEY, false);
                     writeBool(context, CONFIG.EXEC_LOCK_KEY, false);
-                    writeBool(context, CONFIG.AWAIT_INPUT_KEY, false); // v4.4.2: disarm auto-execution
-                    log("toggle: → OFF (lock cleared)");
+                    writeBool(context, CONFIG.AWAIT_INPUT_KEY, false);
+                    log("toggle: → OFF");
                 }
             }
-            // Always return current UI state — never block refresh
-            return buildUI();
+            return null;  // plan_mode returns null for toggle, platform handles UI
         }
 
         if (action === "create") {
-            // v3.7.0 MENU_PROBE: confirm create call frequency for Phase 1 dynamic rendering
             log("MENU_PROBE: create called at " + Date.now());
-            return buildUI();
+            var m = readMode(context);
+            return {
+                toggles: [{
+                    id: CONFIG.TOGGLE_ID,
+                    title: "Deep Research [" + (m === MODES.OFF ? "OFF" : "ON") + "]",
+                    description: "Tap to toggle Deep Research",
+                    icon: "search",
+                    isChecked: m !== MODES.OFF
+                }]
+            };
         }
 
         return { toggles: [], ok: true };
@@ -455,18 +461,19 @@ function registerToolPkg() {
             id:       CONFIG.TOGGLE_ID,
             function: onInputMenuToggle
         });
+        log("registered: InputMenuToggle");
     } catch (e) {
         log("registerToolPkg failed: " + String(e));
         return false;
     }
 
-    // v4.4.2: SystemPromptComposeHook — inject auto-exec instruction when armed
+    // v4.4.2: SystemPromptComposeHook
     try {
         ToolPkg.registerSystemPromptComposeHook({
             id:       "deep_research_system_prompt",
             function: onSystemPromptCompose
         });
-        log("registered: SystemPromptComposeHook (auto-exec injection)");
+        log("registered: SystemPromptComposeHook");
     } catch (e) {
         log("SystemPromptComposeHook registration failed: " + String(e));
     }
@@ -477,39 +484,12 @@ function registerToolPkg() {
             id:       "deep_research_message_processing",
             function: onMessageProcessing
         });
-        log("registered: MessageProcessingPlugin (backup trigger)");
+        log("registered: MessageProcessingPlugin");
     } catch (e) {
         log("MessageProcessingPlugin registration failed: " + String(e));
     }
 
-    // v4.4.2: PromptFinalizeHook — last-chance SYSTEM override
-    try {
-        ToolPkg.registerPromptFinalizeHook({
-            id:       "deep_research_prompt_finalize",
-            function: onPromptFinalize
-        });
-        log("registered: PromptFinalizeHook (last-chance injection)");
-    } catch (e) {
-        log("PromptFinalizeHook registration failed: " + String(e));
-    }
-
-    // v4.4.2: ToolPromptComposeHook — tool whitelist enforcement
-    try {
-        ToolPkg.registerToolPromptComposeHook({
-            id:       "deep_research_tool_prompt",
-            function: onToolPromptCompose
-        });
-        log("registered: ToolPromptComposeHook (tool whitelist)");
-    } catch (e) {
-        log("ToolPromptComposeHook registration failed: " + String(e));
-    }
-
     _registered = true;
-    log("registered: InputMenuToggle (binary: OFF→FORCE, user states: OFF/READY/RUNNING)");
-
-    // MessageProcessingPlugin intentionally NOT registered.
-    // It's a filter API, not a modifier. We never intercept messages.
-
     log("registerToolPkg done");
     return true;
 }
