@@ -3,7 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.registerToolPkg = exports.onInputMenuToggle = void 0;
 
 // ═══════════════════════════════════════════════════════════
-// DeepResearch Agent v4.4.2 — main.js
+// Deepsight Agent v4.4.2 — main.js
 //
 // Architecture: the menu writes intent; the orchestrator consumes it.
 //
