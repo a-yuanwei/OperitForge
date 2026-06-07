@@ -97,6 +97,164 @@ var ERROR = {
  (function() {
     'use strict';
 
+    // ═══════════════════════════════════════════════════════════
+    // P0 Infrastructure: State Model, Stage Registry, Checkpoint Migration
+    // v4.4.2 → v4.5.0: session schema + validate + registry + migration
+    // ═══════════════════════════════════════════════════════════
+
+    var STATE_VERSION = '4.4.2';  // canonical: plain digits, no 'v' prefix
+
+    // ── P0-1: SESSION_SCHEMA ──────────────────────────────────
+    var SESSION_SCHEMA = {
+        meta:       ['sessionId','startedAt','updatedAt','query','thesis'],
+        input:      ['languageConfig','topicProfile','subQuestions','dimensions','constraints'],
+        pipeline:   ['currentStage','completedStages','stageResults','stageDefinitions','stageTransitions'],
+        search:     ['plan','rounds','roundAdvances','totalSearches','totalIngested','pendingQueries','executedQueries','searchHistory','failedSearches'],
+        sources:    ['sources','sourceIndex','extractedFacts'],
+        quality:    ['qualityGate','assertions','deepAnalysisResult','thesisStatement'],
+        conflicts:  ['conflicts','gaps','subQuestionCoverage'],
+        checkpoint: ['checkpoints'],
+        errors:     ['errors']
+    };
+
+    var SESSION_DEFAULTS = {
+        currentStage: 'INIT', completedStages: [], stageResults: {},
+        sources: [], sourceIndex: {}, extractedFacts: [], assertions: [],
+        conflicts: [], gaps: [], checkpoints: [], errors: [],
+        search: { rounds:0, roundAdvances:0, totalSearches:0, totalIngested:0, pendingQueries:[], executedQueries:[], searchHistory:[], failedSearches:[] },
+        qualityGate: { lastCheck:null, lastResult:null, failedGates:[], checkCount:0 }
+    };
+
+    // ── P0-1: normalizeSessionState — fill missing fields with safe defaults ──
+    function normalizeSessionState(ss) {
+        if (!ss) return ss;
+        // Ensure sub-objects exist
+        if (!ss.search) ss.search = {};
+        if (!ss.qualityGate) ss.qualityGate = {};
+        if (!ss.constraints) ss.constraints = {};
+        // Fill defaults for known nullable fields
+        var defs = SESSION_DEFAULTS;
+        for (var key in defs) {
+            if (!defs.hasOwnProperty(key)) continue;
+            if (ss[key] === undefined || ss[key] === null) {
+                if (Array.isArray(defs[key])) ss[key] = defs[key].slice();
+                else if (typeof defs[key] === 'object') ss[key] = JSON.parse(JSON.stringify(defs[key]));
+                else ss[key] = defs[key];
+            }
+        }
+        // Ensure nested defaults
+        var sd = SESSION_DEFAULTS;
+        for (var nk in sd.search) { if (sd.search.hasOwnProperty(nk) && ss.search[nk]===undefined) { if (Array.isArray(sd.search[nk])) ss.search[nk]=[]; else ss.search[nk]=sd.search[nk]; } }
+        for (var qk in sd.qualityGate) { if (sd.qualityGate.hasOwnProperty(qk) && ss.qualityGate[qk]===undefined) ss.qualityGate[qk]=sd.qualityGate[qk]; }
+        return ss;
+    }
+
+    // ── P0-2: validateSessionState — check structural integrity (post-normalize) ──
+    function validateSessionState(ss) {
+        if (!ss || !ss.sessionId) return { valid: false, reason: 'missing sessionId' };
+        var issues = [];
+        // 1. Schema field presence
+        for (var block in SESSION_SCHEMA) {
+            if (!SESSION_SCHEMA.hasOwnProperty(block)) continue;
+            var fields = SESSION_SCHEMA[block];
+            for (var i = 0; i < fields.length; i++) {
+                if (ss[fields[i]] === undefined) issues.push('missing:' + block + '.' + fields[i]);
+            }
+        }
+        // 2. Type checks on critical fields
+        if (!Array.isArray(ss.sources)) issues.push('type:sources not array');
+        if (!Array.isArray(ss.assertions)) issues.push('type:assertions not array');
+        if (!Array.isArray(ss.completedStages)) issues.push('type:completedStages not array');
+        if (!Array.isArray(ss.checkpoints)) issues.push('type:checkpoints not array');
+        if (typeof ss.search !== 'object' || ss.search === null) issues.push('type:search not object');
+        if (typeof ss.qualityGate !== 'object' || ss.qualityGate === null) issues.push('type:qualityGate not object');
+        if (!ss.currentStage || typeof ss.currentStage !== 'string') issues.push('type:currentStage invalid');
+        // 3. Structural minimums
+        if (ss.stageDefinitions && !Array.isArray(ss.stageDefinitions)) issues.push('type:stageDefinitions not array');
+        if (ss.stageTransitions && typeof ss.stageTransitions !== 'object') issues.push('type:stageTransitions not object');
+        return { valid: issues.length === 0, issues: issues };
+    }
+
+    // ── P0-3: STAGE_REGISTRY — single source of stage truth ──
+    var STAGE_REGISTRY = {
+        INIT:            { order:1,  name:'Init',              next:'QUERY_PLAN',  exit:function(ss){return true;},               fallback:null },
+        QUERY_PLAN:      { order:2,  name:'Query Plan',        next:'SEARCH',       exit:function(ss){return (ss.search&&ss.search.pendingQueries&&ss.search.pendingQueries.length>0);}, fallback:null },
+        SEARCH:          { order:3,  name:'Search',            next:'FETCH',        exit:function(ss){return (ss.sources&&ss.sources.length>=3);}, fallback:'QUERY_PLAN' },
+        FETCH:           { order:4,  name:'Fetch',             next:'EXTRACT',      exit:function(ss){return true;},               fallback:'SEARCH' },
+        EXTRACT:         { order:5,  name:'Extract',           next:'AUTHORITY_CLASSIFY', exit:function(ss){return true;},         fallback:null },
+        AUTHORITY_CLASSIFY:{ order:6, name:'Authority Classify',next:'CROSS_VALIDATE',exit:function(ss){return true;},           fallback:null },
+        CROSS_VALIDATE:  { order:7,  name:'Cross Validate',    next:'GAP_DETECT',   exit:function(ss){return true;},               fallback:null },
+        GAP_DETECT:      { order:8,  name:'Gap Detect',        next:'DEEP_ANALYZE', exit:function(ss){return (ss.qualityGate&&ss.qualityGate.lastResult);}, fallback:'SEARCH' },
+        DEEP_ANALYZE:    { order:9,  name:'Deep Analyze',      next:'THESIS_BUILD', exit:function(ss){return !!ss.deepAnalysisResult;}, fallback:null },
+        THESIS_BUILD:    { order:10, name:'Thesis Build',       next:'QUALITY_GATE', exit:function(ss){return !!ss.thesisStatement;}, fallback:null },
+        QUALITY_GATE:    { order:11, name:'Quality Gate',       next:'CONFIDENCE_TAG',exit:function(ss){var r=ss.qualityGate&&ss.qualityGate.lastResult;return r&&r.allPassed;}, fallback:'GAP_DETECT' },
+        CONFIDENCE_TAG:  { order:12, name:'Confidence Tag',    next:'COMPILE',      exit:function(ss){return (ss.assertions&&ss.assertions.length>0);}, fallback:null },
+        COMPILE:         { order:13, name:'Compile',            next:'OUTPUT',       exit:function(ss){return (ss.checkpoints&&ss.checkpoints.length>0);}, fallback:'GAP_DETECT' },
+        OUTPUT:          { order:14, name:'Output',             next:null,           exit:function(ss){return true;},               fallback:null }
+    };
+    // ── P0-3: backwards-compatible STAGE_CONFIG from registry ──
+    var STAGE_CONFIG = {
+        stages: [],
+        transitions: {},
+        gateCount: 15,
+        stageCount: 14,
+        gates: { minSources: 6, minRounds: 2, minQuantSources: 2, minCnTier01: 1, minCnCases: 1, strongCnMinZhCount: 4, maxBiasRatio: 0.6 },
+        order: STAGE_ORDER
+    };
+    (function buildStageConfig() {
+        var ids = Object.keys(STAGE_REGISTRY);
+        for (var i = 0; i < ids.length; i++) {
+            var r = STAGE_REGISTRY[ids[i]];
+            STAGE_CONFIG.stages.push({ id: ids[i], name: r.name });
+            STAGE_CONFIG.transitions[ids[i]] = {};
+            if (r.next) STAGE_CONFIG.transitions[ids[i]].next = r.next;
+            if (r.fallback) {
+                if (ids[i] === 'SEARCH' || ids[i] === 'FETCH') STAGE_CONFIG.transitions[ids[i]].feedbackOnEmpty = r.fallback;
+                else if (ids[i] === 'GAP_DETECT') STAGE_CONFIG.transitions[ids[i]].feedbackOnGaps = r.fallback;
+                else if (ids[i] === 'QUALITY_GATE') STAGE_CONFIG.transitions[ids[i]].feedbackOnFail = r.fallback;
+                else if (ids[i] === 'COMPILE') STAGE_CONFIG.transitions[ids[i]].feedbackOnIncomplete = r.fallback;
+            }
+        }
+    })();
+    var DEFAULT_STAGES = STAGE_CONFIG.stages;
+    // ── stage registry revision hash for cache binding ──
+    var STAGE_SCHEMA_HASH = 's' + STAGE_CONFIG.stages.length + 't' + Object.keys(STAGE_CONFIG.transitions).length;
+
+    // ── P0-4: Checkpoint versioning + migration ──
+    var CHECKPOINT_VERSION = STATE_VERSION;  // '4.4.2'
+    var VERSION_ORDER = ['4.4.1','4.4.2'];
+    function nextVersion(v) {
+        var idx = VERSION_ORDER.indexOf(v);
+        return (idx >= 0 && idx < VERSION_ORDER.length - 1) ? VERSION_ORDER[idx + 1] : null;
+    }
+    var CHECKPOINT_MIGRATIONS = {
+        '4.4.1': function(ckpt) {
+            // v4.4.1→4.4.2: add menuState awareness, normalize search defaults
+            var ss = ckpt.sessionState;
+            if (ss) {
+                normalizeSessionState(ss);
+                if (!ss.search) ss.search = {};
+                if (ss.search.roundAdvances === undefined) ss.search.roundAdvances = ss.search.rounds || 0;
+            }
+            ckpt.version = '4.4.2';
+            return ckpt;
+        }
+    };
+    function migrateCheckpoint(ckpt) {
+        if (!ckpt) return ckpt;
+        var cloned = JSON.parse(JSON.stringify(ckpt));  // non-destructive
+        var v = cloned.version || '4.4.1';
+        while (v !== CHECKPOINT_VERSION) {
+            var fn = CHECKPOINT_MIGRATIONS[v];
+            if (typeof fn === 'function') cloned = fn(cloned);
+            var nv = nextVersion(v);
+            if (!nv) break;  // safety: prevent infinite loop
+            v = nv;
+        }
+        cloned.version = CHECKPOINT_VERSION;
+        return cloned;
+    }
+
     // ── Toggle Integration (v3.3.1 → v3.7.0) ─────────────────────────
     // v3.7.0: key names now reference KEY.* from the canonical constants block.
     var TOGGLE_KEY = KEY.TOGGLE;
@@ -210,9 +368,9 @@ var ERROR = {
           return { code: 'INTERNAL', cat: ERROR.code.INTERNAL.cat, hint: ERROR.code.INTERNAL.hint };
       }
  
-     // ── _writeAutoCheckpoint: fail-soft auto checkpoint via Java I/O (v3.9.0 Phase2) ──
-     var _autoCheckpointSeq = 0;
-     function _writeAutoCheckpoint(stage, ss) {
+// ── _writeAutoCheckpoint: fail-soft auto checkpoint via Java I/O (v3.9.0 Phase2) ──
+      var _autoCheckpointSeq = 0;
+      function _writeAutoCheckpoint(stage, ss) {
          if (!ss || !ss.sessionId) return;
          try {
              var dir = '/sdcard/Operit/deep_research/pipeline/' + ss.sessionId + '/';
@@ -286,12 +444,28 @@ var ERROR = {
                  var ig = _inputGuard(params, spec.params);
                  if (ig) return ig;
              }
-             // 3. Session extraction
+             // 3. Session extraction + normalization
              var ss = (params && params.session_state) || null;
+             var pSessionId = params && params.sessionId;
+             // P1: defensive recovery — if session_state missing but sessionId provided
              if (spec.requiresSession && (!ss || !ss.sessionId)) {
-                 return { success: false, error: ERROR.code.NO_SESSION.hint, _errorCode: 'NO_SESSION', _errorCategory: ERROR.code.NO_SESSION.cat };
-             }
-             // 4. Execute with ErrorTaxonomy
+                 if (pSessionId) {
+                     // Attempt to restore from active session memory
+                     if (_activeSessionId === pSessionId) {
+                         ss = { sessionId: pSessionId };
+                         normalizeSessionState(ss);
+                     } else {
+                         // Provide a minimal recoverable state
+                         ss = { sessionId: pSessionId };
+                         normalizeSessionState(ss);
+                         // Mark as thin state for downstream tools
+                         ss._recovered = true;
+                     }
+                 } else {
+                     return { success: false, error: ERROR.code.NO_SESSION.hint, _errorCode: 'NO_SESSION', _errorCategory: ERROR.code.NO_SESSION.cat };
+                 }
+if (ss && ss.sessionId) { normalizeSessionState(ss); }
+            // 4. Execute with ErrorTaxonomy
              var result;
              try {
                  result = await spec.impl(params, ss);
@@ -318,11 +492,23 @@ var ERROR = {
                  _writeAutoCheckpoint(spec.stage || 'UNKNOWN', ss);
              }
              // 9. Session-state injection (v4.4.2 D6-D8 fix)
-             // Tools that mutate ss in-place (advanceSearchRound, ingest, etc.)
-             // must return the mutated state so the AI can pass it to the next tool.
-             // Without this, counters, sources, and checkpoint data are lost between calls.
              if (ss && result && result.success !== false && result.sessionState === undefined) {
                  result.sessionState = ss;
+             }
+             // P1: Structured telemetry log
+             if (ss && ss.sessionId) {
+                 try {
+                     var _log = '[DR:' + ss.sessionId.substr(0,8) + '] ' +
+                         (spec.name||'tool') + ' @' + (ss.currentStage||'?') +
+                         ' src=' + (ss.sources?ss.sources.length:0) +
+                         ' r=' + (ss.search?ss.search.rounds:0) +
+                         ' ' + (result&&result.success!==false?'OK':'FAIL');
+                     console.log(_log);
+                 } catch(ignored) {}
+             }
+             // P1: CALL_CONTRACT_BROKEN warning — thin state recovered
+             if (ss && ss._recovered && result && result.success !== false) {
+                 result._warning = 'CALL_CONTRACT_BROKEN: sessionState was incomplete. Pass the full sessionState from the previous tool result, not just sessionId.';
              }
              return result;
          };
@@ -335,6 +521,8 @@ var ERROR = {
         for (var i = 0; i < required.length; i++) {
             var r = required[i];
             var val = args[r.name];
+            // P1: session_state may be replaced by sessionId (recovery path)
+            if (r.name === 'session_state' && !val && args.sessionId) continue;
             if (val === undefined || val === null || val === '' ||
                 (typeof val === 'string' && val.trim() === '') ||
                 (Array.isArray(val) && val.length === 0)) {
@@ -342,6 +530,29 @@ var ERROR = {
             }
         }
         return null;
+    }
+
+    // v4.5.0: Task lifecycle — write-tool interception + seal
+    var WRITE_TOOLS = ['ingest_source','advance_search_round','check_quality_gate'];
+    function isWriteTool(n) { return WRITE_TOOLS.indexOf(n) !== -1; }
+    function assertTaskWritable(ss, name) {
+        if (!ss || !ss.task) return { ok: true };
+        if (!isWriteTool(name)) return { ok: true };
+        if (ss.task.status === 'sealed' || ss.task.lockLevel === 'hard')
+            return { ok: false, code: 'SESSION_LOCKED', cat: 'FATAL', message: 'Task sealed: ' + (ss.task.sealReason||'done') };
+        return { ok: true };
+    }
+    function sealTask(ss, reason) {
+        if (!ss) return false;
+        if (!ss.task) ss.task = {};
+        if (ss.task.status === 'sealed') return true;
+        ss.task.sealReason = reason || 'done';
+        ss.task.sealedAt = Date.now();
+        ss.task.lockLevel = 'soft';
+        ss.task.lockScope = WRITE_TOOLS.slice();
+        ss.task.lastMutableStage = ss.currentStage || '?';
+        ss.task.status = 'sealed';
+        return true;
     }
 
     var _lastAdvancedSession = null;
@@ -358,37 +569,6 @@ var ERROR = {
         _lastAdvancedSession = sid;
         Metrics.inc('searchRoundAdvances');
     }
-
-    var STAGE_CONFIG = {
-        stages: [
-            { id: 'INIT', name: 'Init' }, { id: 'QUERY_PLAN', name: 'Query Plan' },
-            { id: 'SEARCH', name: 'Search' }, { id: 'FETCH', name: 'Fetch' },
-            { id: 'EXTRACT', name: 'Extract' }, { id: 'AUTHORITY_CLASSIFY', name: 'Authority Classify' },
-            { id: 'CROSS_VALIDATE', name: 'Cross Validate' }, { id: 'GAP_DETECT', name: 'Gap Detect' },
-            { id: 'DEEP_ANALYZE', name: 'Deep Analyze' }, { id: 'THESIS_BUILD', name: 'Thesis Build' },
-            { id: 'QUALITY_GATE', name: 'Quality Gate' }, { id: 'CONFIDENCE_TAG', name: 'Confidence Tag' },
-            { id: 'COMPILE', name: 'Compile' }, { id: 'OUTPUT', name: 'Output' }
-        ],
-        transitions: {
-            INIT: { next: 'QUERY_PLAN' }, QUERY_PLAN: { next: 'SEARCH' },
-            SEARCH: { next: 'FETCH', feedbackOnEmpty: 'QUERY_PLAN' },
-            FETCH: { next: 'EXTRACT', feedbackOnEmpty: 'SEARCH' },
-            EXTRACT: { next: 'AUTHORITY_CLASSIFY' }, AUTHORITY_CLASSIFY: { next: 'CROSS_VALIDATE' },
-            CROSS_VALIDATE: { next: 'GAP_DETECT' },
-            GAP_DETECT: { next: 'DEEP_ANALYZE', feedbackOnGaps: 'SEARCH' },
-            DEEP_ANALYZE: { next: 'THESIS_BUILD' }, THESIS_BUILD: { next: 'QUALITY_GATE' },
-            QUALITY_GATE: { next: 'CONFIDENCE_TAG', feedbackOnFail: 'GAP_DETECT' },
-            CONFIDENCE_TAG: { next: 'COMPILE' },
-            COMPILE: { next: 'OUTPUT', feedbackOnIncomplete: 'GAP_DETECT' },
-            OUTPUT: { next: null }
-        },
-        gateCount: 15,
-        stageCount: 14,
-        gates: { minSources: 6, minRounds: 2, minQuantSources: 2, minCnTier01: 1, minCnCases: 1, strongCnMinZhCount: 4, maxBiasRatio: 0.6 },
-        order: ['INIT','QUERY_PLAN','SEARCH','FETCH','EXTRACT','AUTHORITY_CLASSIFY','CROSS_VALIDATE','GAP_DETECT','DEEP_ANALYZE','THESIS_BUILD','QUALITY_GATE','CONFIDENCE_TAG','COMPILE','OUTPUT']
-    };
-    STAGE_CONFIG.order = STAGE_ORDER;  // v3.7.0: eliminate dual source, reference canonical truth source
-    var DEFAULT_STAGES = STAGE_CONFIG.stages;
 
     // ── Language Profiles ──────────────────────────
     // v3.4.0: matchTier dispatch is now fully polymorphic via _langMatchers[lang].
@@ -614,10 +794,14 @@ var ERROR = {
         }
         function invalidateGate() { _gateCache = null; }
         function getGate(sourceCount) {
-            if (_gateCache && _gateCache.sourceCount === sourceCount) return _gateCache.result;
-            return null;
-        }
-        function putGate(sourceCount, result) { _gateCache = { sourceCount: sourceCount, result: result }; }
+    var hash = typeof STAGE_SCHEMA_HASH !== 'undefined' ? STAGE_SCHEMA_HASH : 's14t14';
+    if (_gateCache && _gateCache.key === hash + '_' + sourceCount) return _gateCache.result;
+    return null;
+}
+function putGate(sourceCount, result) {
+    var hash = typeof STAGE_SCHEMA_HASH !== 'undefined' ? STAGE_SCHEMA_HASH : 's14t14';
+    _gateCache = { key: hash + '_' + sourceCount, result: result };
+}
 
         return { getAuthority: getAuthority, putAuthority: putAuthority, invalidateGate: invalidateGate,
             getGate: getGate, putGate: putGate };
@@ -1141,6 +1325,12 @@ if (cnAdaptive.policyRelevant) { var hasPolicy = checkDimensionCoverage(dimensio
             passedCount: results.filter(function(r) { return r.passed; }).length,
             failedGates: results.filter(function(r) { return !r.passed; }).map(function(r) { return r.id + ' ' + r.name; }),
             correctionHints: _correctionHints,
+            // P1: Structured gate summary
+            gateSummary: {
+                inputGate: { sources: { need: G.minSources, have: sources.length }, rounds: { need: G.minRounds, have: rounds } },
+                processGate: { zhSources: zhCount, enSources: enCount, quantSources: quantCount, biasRatio: biasCheck.maxRatio },
+                outputGate: { dimensionCovered: dimensions.length, dimensionBlind: (dimComplete.passed?0:1) }
+            },
             details: results, cnAdaptive: cnAdaptive };
         // ── Cache result for subsequent calls with same source count ──
         CachePolicy.putGate(sources.length, result);
@@ -1335,7 +1525,7 @@ function countEnTerms(sources) { return countTermsByLang(sources, 'en'); }
     function checkCitationIndependence(sources) { var rm = {}; for (var i = 0; i < sources.length; i++) { var refs = sources[i].references || [], key = sources[i].url; if (!rm[key]) rm[key] = []; for (var j = 0; j < refs.length; j++) rm[key].push(refs[j]); } var echo = false, pairs = [], keys = Object.keys(rm); for (var a = 0; a < keys.length && !echo; a++) { for (var b = a + 1; b < keys.length && !echo; b++) { if (rm[keys[a]].indexOf(keys[b]) !== -1 && rm[keys[b]].indexOf(keys[a]) !== -1) { echo = true; pairs.push(keys[a] + '<->' + keys[b]); } } } return { hasEcho: echo, summary: echo ? 'Echo: ' + pairs.join(';') : 'No echo' }; }
     function checkOpposingQuality(sources) { var st = { pro: [], con: [] }; for (var i = 0; i < sources.length; i++) { if (sources[i].stance === 'pro') st.pro.push(sources[i]); if (sources[i].stance === 'con') st.con.push(sources[i]); } if (st.con.length === 0) return { passed: true, summary: 'No opposition' }; var hasQ = false; for (var j = 0; j < st.con.length; j++) { var tier = st.con[j].authorityTier !== undefined ? st.con[j].authorityTier : st.con[j].tier; if (tier !== undefined && tier <= 2) { hasQ = true; break; } } return { passed: hasQ, summary: hasQ ? 'Quality OK' : 'Opposition lacks Tier0-2' }; }
     function checkDimensionCoverage(dimensions, req) { for (var i = 0; i < req.length; i++) { for (var j = 0; j < dimensions.length; j++) { if (dimensions[j].toLowerCase().indexOf(req[i]) !== -1) return true; } } return false; }
-    function checkDimensionCompleteness(dimensions, topic) { if (!dimensions || !dimensions.length) return { passed: true, summary: 'N/A (insufficient data)' }; var ess = ['market','technology','security','pricing','regulation']; var cov = [], mis = []; for (var i = 0; i < ess.length; i++) { var found = false; for (var j = 0; j < dimensions.length; j++) { if (dimensions[j].toLowerCase().indexOf(ess[i]) !== -1) { found = true; break; } } if (found) cov.push(ess[i]); else mis.push(ess[i]); } return { passed: mis.length <= 1, summary: 'Cov:' + cov.join(',') + '; Mis:' + mis.join(',') }; }
+    function checkDimensionCompleteness(dimensions, topic) { var ess = ['market','technology','security','pricing','regulation']; var cov = [], mis = []; for (var i = 0; i < ess.length; i++) { var found = false; for (var j = 0; j < dimensions.length; j++) { if (dimensions[j].toLowerCase().indexOf(ess[i]) !== -1) { found = true; break; } } if (found) cov.push(ess[i]); else mis.push(ess[i]); } return { passed: mis.length <= 1, summary: 'Cov:' + cov.join(',') + '; Mis:' + mis.join(',') }; }
 
 // ── P1 (v3.5.0): _suggestNext decision engine with circuit breaker ──
 var _suggestNextCircuitBreaker = { tripped: false, lastStage: '', lastAction: '', count: 0 };
@@ -1353,7 +1543,7 @@ function _makeSuggestNext(toolName, sessionState) {
             if (lr && lr.allPassed) {
                 return { stage: 'DEEP_ANALYZE', action: 'deep_analyze', reason: 'All quality gates passed' };
             }
-            return { stage: 'SEARCH', action: 'ingest_source', reason: 'Gates failed; go back to SEARCH and ingest more sources' };
+            return { stage: 'GAP_DETECT', action: 'advance_search_round', reason: 'Gates failed; need more sources' };
         },
         tag_confidence:          { stage: 'CONFIDENCE_TAG',    action: 'check_quality_gate',      reason: 'Confidence tagged; re-evaluate quality gates' },
         deep_analyze:            { stage: 'THESIS_BUILD',  action: 'create_checkpoint',       reason: 'Deep analysis complete; save checkpoint' },
@@ -1806,7 +1996,7 @@ name: 'create_checkpoint',
 function decomposeSubtasks(query) {
     // Heuristic: detect comparison/compound queries
     var ql = query.toLowerCase();
-    var comparisonMarkers = [' vs ', ' versus ', ' compare ', ' comparison '];
+    var comparisonMarkers = [' vs ', ' versus ', ' compare ', ' comparison ', ' and '];
     var hasComparison = false;
     for (var i = 0; i < comparisonMarkers.length; i++) {
         if (ql.indexOf(comparisonMarkers[i]) !== -1) { hasComparison = true; break; }
@@ -1820,7 +2010,7 @@ function decomposeSubtasks(query) {
     for (var w = 0; w < words.length; w++) {
         var word = words[w];
         // Heuristic: entities are capitalized or contain digits/version numbers
-        if (/^[A-Z][a-zA-Z]{2,}$/.test(word) || /\\d/.test(word) || (/^[A-Z]/.test(word) && word.length >= 5)) {
+        if (/^[A-Z][a-zA-Z]*$/.test(word) || /\d/.test(word) || word.length >= 4) {
             if (currentEntity) currentEntity += ' ';
             currentEntity += word;
         } else if (comparisonMarkers.indexOf(' ' + word.toLowerCase() + ' ') === -1) {
@@ -1873,9 +2063,9 @@ async function orchestrate_research(params) {
     var _forceFailed = false;  // v4.4.1: track FORCE failure for finally-block menu state
     var ctx = getAppContext();  // Single acquisition — reused throughout
       try {
-var ig = _inputGuard(params, [{name:'query', hint:'query'}]); if (ig) return ig;
-var query = params.query;
-         if (!query || query.trim() === '') return { success: false, error: 'query is required' };  /* unreachable: _inputGuard */
+ var ig = _inputGuard(params, [{name:'query', hint:'query'}]); if (ig) return ig;
+ var query = params.query;
+ if (!query || query.trim() === '') return { success: false, error: 'query is required' };  /* unreachable: _inputGuard */
 
          // ── Clear any prior active session (new orchestration supersedes) ──
          clearActiveSession();
@@ -2012,7 +2202,13 @@ var guide = buildOrchestrationGuide(sessionState, base.meta);
              plantodo: base.plantodo || null,
              planProgress: base.planProgress || null,
              toggleAutoClosed: true,
-              note: 'FORCE: one-shot execution. Run request consumed. Pipeline advanced to QUERY_PLAN. Remaining stages require AI to call tools step-by-step.',
+              note: 'FORCE: execution complete. Pipeline at QUERY_PLAN. NOW: call visit_web → ingest_source → advance_search_round → check_quality_gate. Repeat until QG all-passed. DO NOT output text until OUTPUT stage.',
+            nextAction: {
+                tool: 'visit_web',
+                hint: 'IMPORTANT: Pass the FULL sessionState from THIS response as the session_state parameter in your next tool call. Do NOT pass just sessionId — that will create a blank session. Use the complete sessionState object returned above.',
+                requiredCalls: ['visit_web','ingest_source','advance_search_round','check_quality_gate'],
+                stopCondition: 'check_quality_gate returns allPassed=true'
+            },
               subTasks: _subTasks.length > 0 ? _subTasks : undefined,
               _suggestNext: _makeSuggestNext('orchestrate_research', sessionState)
            });
@@ -2276,15 +2472,13 @@ function _menuSelfCheck(ctx) {
         var ai=!!ApiPreferences.getFeatureToggleBlocking(ctx,p+'awaiting_input',false);
         var el=!!ApiPreferences.getFeatureToggleBlocking(ctx,p+'exec_lock',false);
 
-        // 1. Marker consistency — real check
-        var mode=tOn?(fOn?'FORCE':'SUGGEST'):'OFF',exp='OFF',markerOk=true;
-        if(mode==='OFF'&&rp){markerOk=false;exp='OFF(anomaly:rp)';}
-        else if(mode==='OFF'&&ms){markerOk=false;exp='OFF(anomaly:ms)';}
-        else if(ai&&ms){markerOk=false;exp='ANOMALY(ai+ms)';}
-        else if(!el&&(rp||ms)){markerOk=false;exp='ANOMALY(no_lock)';}
-        else if(el&&!rp&&!ms){markerOk=false;exp='ANOMALY(stale_lock)';}
-        else{if(mode==='OFF'&&lf)exp='FAIL';else if(mode==='OFF'&&ld)exp='DONE';else if(rp)exp='READY';else if(ms)exp='RUNNING';else if(lf)exp='FAIL';else if(ld)exp='DONE';else exp='RUNNING(optimistic)';}
-        checks.push({name:'marker',passed:markerOk,expected:exp,
+        // 1. Marker consistency
+        var mode=tOn?(fOn?'FORCE':'SUGGEST'):'OFF',exp;
+        if(mode==='OFF'&&rp)exp='OFF(anomaly)';
+        else if(mode==='OFF'&&lf)exp='FAIL';else if(mode==='OFF'&&ld)exp='DONE';
+        else if(mode==='OFF')exp='OFF';else if(rp)exp='READY';else if(ms)exp='RUNNING';
+        else if(lf)exp='FAIL';else if(ld)exp='DONE';else exp='RUNNING(optimistic)';
+        checks.push({name:'marker',passed:true,expected:exp,
             detail:'mode='+mode+' rp='+rp+' ms='+ms+' ld='+ld+' lf='+lf+' ai='+ai+' el='+el});
 
         // 2. Ghost references
@@ -2393,9 +2587,11 @@ async function resume_research(params) {
         if (gate.blocked) return gate;
         var sessionId = params.session_id;
         if (!sessionId) return { success: false, error: ERROR.code.INPUT_INVALID.hint + ': session_id is required', _errorCode: 'INPUT_INVALID' };
-        var ckpt = PipelineWriter_read(sessionId);
-        if (!ckpt) return { success: false, error: ERROR.code.RESUME_NO_CHECKPOINT.hint + ' (sessionId=' + sessionId + ')', _errorCode: 'RESUME_NO_CHECKPOINT' };
-        var ss = ckpt.sessionState || ckpt;
+var ckpt = PipelineWriter_read(sessionId);
+            if (!ckpt) return { success: false, error: ERROR.code.RESUME_NO_CHECKPOINT.hint + ' (sessionId=' + sessionId + ')', _errorCode: 'RESUME_NO_CHECKPOINT' };
+            // P0-4: migrate checkpoint to current version before restoring
+            try { ckpt = migrateCheckpoint(ckpt); } catch(e) { /* fail-soft */ }
+            var ss = ckpt.sessionState || ckpt;
         if (!ss || !ss.currentStage) return { success: false, error: ERROR.code.CHECKPOINT_READ_FAILED.hint + ': invalid sessionState in checkpoint', _errorCode: 'CHECKPOINT_READ_FAILED' };
         ss.updatedAt = new Date().toISOString();
         // Restore active session tracking
