@@ -3,82 +3,81 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.registerToolPkg = exports.onInputMenuToggle = void 0;
 
 // ═══════════════════════════════════════════════════════════
-// DeepResearch Agent v3.3.0 — main.js
+// DeepResearch Agent v4.4.2 — main.js
 //
-// Architecture: explicit decision + explicit call (user directive)
+// Architecture: the menu writes intent; the orchestrator consumes it.
 //
-// Layer 1 — Message: ALWAYS pass through.
-//   onMessageProcessing NOT registered. The hook is a filter,
-//   not a modifier. We never intercept messages.
+// Design principle:
+//   "菜单负责写请求，调度器负责消费请求，
+//    流水线负责执行，锁负责确保只执行一次。"
+//   Menu writes requests. Orchestrator consumes them.
+//   Pipeline executes them. Lock guarantees exactly-once execution.
 //
-// Layer 2 — Menu: pure state switch (two boolean keys).
-//   onInputMenuToggle only records state via ApiPreferences
-//   boolean API (getFeatureToggleBlocking / setFeatureToggleBlocking).
-//   It does NOT modify messages, inject prompts, or couple to
-//   filtering logic. Single source of truth in ApiPreferences.
+// Layer 1 — Message: always pass through.
+//   onMessageProcessing is intentionally not registered.
+//   The hook is a filter, not a modifier. Messages are never intercepted.
 //
-// Layer 3 — Research: explicit call chain with mode dispatch.
-//   User input → model judges → calls orchestrate_research →
-//   FORCE: auto-execute + close toggle (finally)
-//   SUGGEST: return assessment, keep toggle
-//   OFF: prompt to enable
+// Layer 2 — Menu: writes execution requests (runToken pattern).
+//   onInputMenuToggle writes FEATURE_KEY + FORCE_KEY + RUN_PENDING_KEY.
+//   Toggle is binary: OFF ↔ FORCE (SUGGEST is kept only as an
+//   internal diagnostic state, not in the user path).
+//   create returns user-facing states: OFF / READY / RUNNING.
 //
-// Layer 4 — Risk control: three-state + idempotency.
-//   Toggle cycles: OFF → SUGGEST → FORCE → OFF
-//   Same query blocked for 60s window.
+// Layer 3 — Research: consumes execution requests before running.
+//   orchestrate_research validates RUN_PENDING_KEY before FORCE execution,
+//   consumes it before pipeline start, and auto-closes the toggle in finally.
+//   SUGGEST is assessment-only and does not require RUN_PENDING
+//   (diagnostic path).
+//
+// Layer 4 — Risk control: one-shot execution + idempotency + persistent mutex.
+//   Each menu tap = one execution request (RUN_PENDING_KEY).
+//   The same query is blocked for a 60s window.
+//   FORCE closes after a single execution (finally block).
 //
 // History:
-//   v3.2.9–v3.2.21 — 13 attempts at message injection (all failed)
-//   v3.2.22–v3.2.23 — stripped injection, upgraded tool descriptions
-//   v3.2.24 — arch rewrite: 4-layer, three-state (string prefs — failed)
-//   v3.2.25 — fix: two boolean keys instead of string prefs
-//   v3.2.26 — execution: FORCE/SUGGEST/OFF dispatch + finally close + idempotency
-//   v3.2.27 — audit & closure: FORCE pipeline push (INIT→QUERY_PLAN),
-//             advanceSearchRound() with exports + METADATA registration,
-//             G2 rounds>=2 gate wired, ingest_source/rounds separation,
-//             URL null-guards, detectUnmarkable case fix, clamp removal,
-//             doneWhen honest comments, METADATA description de-exaggerated,
-//             3-file version alignment. P1 closed. Design boundary:
-//             Operit runtime cache may require app restart to reflect METADATA.
-//   v3.2.28 — state & reliability fixes (5 items, 3 commits):
-//             A: advanceSearchRound() → roundAdvances only (totalSearches moved
-//                to actual search exec point); _lastExecution deferred to after
-//                start_research() success (fixes idempotent deadlock on failure).
-//             B: G3 ZH/EN gate now derives minZh/minEn dynamically from
-//                constraints.topicLanguage (no more hardcoded >=2 each);
-//                detectUnmarkable() upgraded to \b word-boundary regex
-//                (eliminates substring false positives on will/should/must/best).
-//             C: doneWhen strings unified to natural-language hints (no more
-//                pseudo-code that looked executable).
-//   v3.2.29 — P0 correctness fixes (5 items):
-//             1) G3 gate added to results + allPassed (was computed but orphaned).
-//             2) registerToolPkg() defers _registered=true to after
-//                registration success; failure allows retry.
-//             3) extractedTerms now Array.isArray() guarded (4 sites).
-//             4) closeToggle() wrapped in try/catch in orchestrate's finally.
-//             5) sourceIndex URL key validated as non-empty string.
-//   v3.3.0 — Architecture refactor (Phases 2–6, 6 IIFE):
-//             Phase 2: AuthorityPolicy IIFE — TierMatcher registry
-//             Phase 3: LanguagePolicy IIFE — adapt() generalizes detectCnAdaptive
-//             Phase 4: GatePolicy IIFE — G8/G9/G11/G12 strategy delegation
-//             Phase 5: SourceIndex IIFE — independent index layer + rebuild()
-//             Phase 6: Store IIFE — push/trim/capacity consolidation
-//             Phase 7: Real Operit runtime smoke test — 10/10 tools verified
+//   v3.2.9–v3.2.29 — 13 injection attempts + architecture rewrites (all prior)
+//   v3.3.0 — 10-tool pipeline, three-state toggle, dual deploy
+//   v3.3.1 — menu→intent architecture: binary toggle, runToken gate,
+//            user-facing states (OFF/READY/RUNNING), context failure is
+//            no longer disguised as a valid mode. Persistent mutex
+//            (EXEC_LOCK_KEY) closes the last cross-cycle re-entry gap.
+//   v3.4.0 — Phase 2 deconstruction: single-file IIFE split into 5-module
+//            src/ + pure-cat build script. matchTier polymorphic dispatch
+//            via _langMatchers[lang]. GatePolicy.enabledBy multilingualized
+//            via gateHints traversal. CachePolicy/Metrics/Store hardened.
 // ═══════════════════════════════════════════════════════════
 
 // ── Configuration ─────────────────────────────────────────
+// ⚠️ SYNC-WALL: These 7 key-name values MUST match src/00_core.js KEY block.
+//    BUILD_ASSERT_V3 validates this at build time.
+//    If you change a value here, you MUST change the same key in src/00_core.js.
 var CONFIG = {
-    FEATURE_KEY: "deep_research_mode",       // main toggle ON/OFF
-    FORCE_KEY:   "deep_research_mode_force", // when ON+true → FORCE; ON+false → SUGGEST
-    TOGGLE_ID:   "deep_research_input_menu_toggle",
-    LOG_TAG:     "[DeepResearch]"
+    FEATURE_KEY:      "deep_research_mode",       // ON/OFF (boolean)
+    FORCE_KEY:        "deep_research_mode_force", // when ON+true → FORCE; ON+false → SUGGEST
+    RUN_PENDING_KEY:  "deep_research_run_pending",// true = execution requested via menu
+    LAST_DONE_KEY:    "deep_research_last_done",  // true = last execution succeeded
+    LAST_FAILED_KEY:  "deep_research_last_failed",// true = last execution failed
+    EXEC_LOCK_KEY:    "deep_research_exec_lock",  // persistent mutex: true = execution window open
+    MENU_STATE_KEY:   "deep_research_menu_state", // v3.7.0: true = pipeline running
+    AWAIT_INPUT_KEY:  "deep_research_awaiting_input", // v4.4.2: true = awaiting user msg for auto-execution
+    TOGGLE_ID:        "deep_research_input_menu_toggle",
+    LOG_TAG:          "[DeepResearch]"
 };
 
-// ── Mode labels ───────────────────────────────────────────
+// ── Internal mode labels ──────────────────────────────────
 var MODES = {
-    OFF:     { label: "OFF",     desc: "Research inactive. AI answers normally." },
-    SUGGEST: { label: "SUGGEST", desc: "AI may suggest calling orchestrate_research." },
-    FORCE:   { label: "FORCE",   desc: "AI SHOULD call orchestrate_research. Toggle off after use." }
+    OFF:     { label: "OFF",     desc: "Research inactive." },
+    SUGGEST: { label: "SUGGEST", desc: "Assessment-only (diagnostic)." },
+    FORCE:   { label: "FORCE",   desc: "One-shot execution window." }
+};
+
+// ── User-facing state labels (shown in create/toggle return) ──
+var UI_STATES = {
+    OFF:     { label: "OFF",    desc: "Closed. Tap to request Deep Research." },
+    READY:   { label: "READY",  desc: "Pending. The next message will trigger research." },
+    RUNNING: { label: "ON",     desc: "Active. The research pipeline is running." },
+    DONE:    { label: "DONE",   desc: "The last research run completed successfully." },
+    FAIL:    { label: "FAIL",   desc: "The last research run encountered an error." }
 };
 
 // ── Dependencies ──────────────────────────────────────────
@@ -149,13 +148,15 @@ function normalizePayload(input) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// Layer 2: onInputMenuToggle — pure state switch
+// Layer 2: onInputMenuToggle — writes execution intent
 //
-// Toggle cycles: OFF → SUGGEST → FORCE → OFF
+// Binary toggle:
+//   OFF → FORCE + RUN_PENDING (write execution request)
+//   FORCE/SUGGEST → OFF (cancel, clear all)
 //
 // Single source of truth:
-//   FEATURE_KEY (bool)  +  FORCE_KEY (bool)
-// Both stored via getFeatureToggleBlocking/setFeatureToggleBlocking.
+//   FEATURE_KEY (bool) + FORCE_KEY (bool) + RUN_PENDING_KEY (bool)
+// All stored via getFeatureToggleBlocking/setFeatureToggleBlocking.
 // ═══════════════════════════════════════════════════════════
 function onInputMenuToggle(input) {
     var payload = normalizePayload(input);
@@ -164,59 +165,280 @@ function onInputMenuToggle(input) {
     var context;
     try {
         context = getAppContext();
-        if (!context) return [];
+        if (!context) return { toggles: [], ok: true };
     } catch (e) {
         log("getAppContext error: " + String(e));
-        return [];
+        return { toggles: [], ok: true };
+    }
+
+    // ── Helper: build menu item from current state ──
+    function buildMenuItem(mode, runPending, lastDone, lastFailed, menuState) {
+        var uiLabel, uiDesc, isChecked;
+        // v4.4.2: catch OFF + runPending anomaly (writeBool failure edge case)
+        if (mode === MODES.OFF && runPending) {
+            writeBool(context, CONFIG.RUN_PENDING_KEY, false);
+            writeBool(context, CONFIG.AWAIT_INPUT_KEY, false);
+            runPending = false;
+            uiLabel   = UI_STATES.OFF.label;
+            uiDesc    = UI_STATES.OFF.desc;
+            isChecked = false;
+        } else if (mode === MODES.OFF && !runPending && !menuState) {
+            if (lastFailed) {
+                uiLabel   = UI_STATES.FAIL.label;
+                uiDesc    = UI_STATES.FAIL.desc;
+            } else if (lastDone) {
+                uiLabel   = UI_STATES.DONE.label;
+                uiDesc    = UI_STATES.DONE.desc;
+            } else {
+                uiLabel   = UI_STATES.OFF.label;
+                uiDesc    = UI_STATES.OFF.desc;
+            }
+            isChecked = false;
+        } else if (runPending) {
+            uiLabel   = UI_STATES.READY.label;
+            uiDesc    = UI_STATES.READY.desc;
+            isChecked = true;
+        } else if (menuState) {
+            uiLabel   = UI_STATES.RUNNING.label;
+            uiDesc    = UI_STATES.RUNNING.desc;
+            isChecked = true;
+        } else if (lastFailed) {
+            uiLabel   = UI_STATES.FAIL.label;
+            uiDesc    = UI_STATES.FAIL.desc;
+            isChecked = false;
+        } else if (lastDone) {
+            uiLabel   = UI_STATES.DONE.label;
+            uiDesc    = UI_STATES.DONE.desc;
+            isChecked = false;
+        } else {
+            // Mode ON but no runPending and no menuState: optimistic RUNNING
+            uiLabel   = UI_STATES.RUNNING.label;
+            uiDesc    = UI_STATES.RUNNING.desc;
+            isChecked = true;
+        }
+        return [{
+            id:          CONFIG.TOGGLE_ID,
+            title:       "Deep Research [" + uiLabel + "]",
+            description: uiDesc,
+            isChecked:   isChecked
+        }];
+    }
+
+    // ── Helper: always return { toggles, ok } so UI can parse ──
+    function buildUI() {
+        var mode       = readMode(context);
+        var runPending = readBool(context, CONFIG.RUN_PENDING_KEY, false);
+        var lastDone   = readBool(context, CONFIG.LAST_DONE_KEY, false);
+        var lastFailed = readBool(context, CONFIG.LAST_FAILED_KEY, false);
+        var menuState  = readBool(context, CONFIG.MENU_STATE_KEY, false);
+        return {
+            toggles: buildMenuItem(mode, runPending, lastDone, lastFailed, menuState),
+            ok: true
+        };
     }
 
     try {
         if (action === "toggle") {
-            var currentMode = readMode(context);
-
-            if (currentMode === MODES.OFF) {
-                // OFF → SUGGEST
-                writeMode(context, MODES.SUGGEST);
-                log("toggle: OFF → SUGGEST");
-            } else if (currentMode === MODES.SUGGEST) {
-                // SUGGEST → FORCE
-                writeMode(context, MODES.FORCE);
-                log("toggle: SUGGEST → FORCE");
-            } else {
-                // FORCE → OFF
-                writeMode(context, MODES.OFF);
-                log("toggle: FORCE → OFF");
+            // Accept any of: menu item id, registration id, or empty (platform may vary)
+            var tid = payload.toggleId || "";
+            if (tid === CONFIG.FEATURE_KEY || tid === CONFIG.TOGGLE_ID || tid === "") {
+                var currentMode = readMode(context);
+                if (currentMode === MODES.OFF) {
+                    writeMode(context, MODES.FORCE);
+                    writeBool(context, CONFIG.RUN_PENDING_KEY, true);
+                    writeBool(context, CONFIG.LAST_DONE_KEY, false);
+                    writeBool(context, CONFIG.LAST_FAILED_KEY, false);
+                    writeBool(context, CONFIG.EXEC_LOCK_KEY, true);
+                    writeBool(context, CONFIG.AWAIT_INPUT_KEY, true); // v4.4.2: arm auto-execution on next user message
+                    log("toggle: OFF → FORCE (run pending, lock set, results cleared)");
+                } else {
+                    writeMode(context, MODES.OFF);
+                    writeBool(context, CONFIG.RUN_PENDING_KEY, false);
+                    writeBool(context, CONFIG.EXEC_LOCK_KEY, false);
+                    writeBool(context, CONFIG.AWAIT_INPUT_KEY, false); // v4.4.2: disarm auto-execution
+                    log("toggle: → OFF (lock cleared)");
+                }
             }
-            return [];
+            // Always return current UI state — never block refresh
+            return buildUI();
         }
 
-        if (action !== "create") return [];
+        if (action === "create") {
+            // v3.7.0 MENU_PROBE: confirm create call frequency for Phase 1 dynamic rendering
+            log("MENU_PROBE: create called at " + Date.now());
+            return buildUI();
+        }
 
-        // ── create: read current state, return UI description ──
-        var mode    = readMode(context);
-        var enabled = (mode !== MODES.OFF);
-        var desc    = mode.label + ": " + mode.desc;
-
-        return [{
-            id:          CONFIG.FEATURE_KEY,
-            title:       "Deep Research [" + mode.label + "]",
-            description: desc,
-            isChecked:   enabled
-        }];
+        return { toggles: [], ok: true };
     } catch (e) {
         log("onInputMenuToggle error: " + String(e));
-        return [];
+        return { toggles: [], ok: true };
     }
 }
 exports.onInputMenuToggle = onInputMenuToggle;
 
 // ═══════════════════════════════════════════════════════════
-// Layer 1: onMessageProcessing — NOT REGISTERED
+// Layer 1: onMessageProcessing — auto-execution injection
 //
-// This hook is a FILTER (matched:true = block).
-// We do NOT use it. Messages always pass through.
-// Business logic lives in the sub-package's explicit call chain.
+// When AWAIT_INPUT_KEY is true, prepend a system instruction
+// to the user's message content. The AI sees this as part of
+// the user message and acts on it immediately.
+//
+// Returns { matched: false } to pass message through unblocked.
+// Returns { matched: false, text: "..." } to modify content.
 // ═══════════════════════════════════════════════════════════
+function onMessageProcessing(event) {
+    try {
+        var payload = event.eventPayload || event;
+        var context = getAppContext();
+        if (!context) return { matched: false };
+
+        var awaiting = Boolean(ApiPreferences.getFeatureToggleBlocking(
+            context, CONFIG.AWAIT_INPUT_KEY, false));
+
+        if (!awaiting) return { matched: false };
+
+        // v4.4.2: prepend auto-exec instruction to user message
+        var originalText = payload.messageContent || '';
+        var injectedText = "[SYSTEM INSTRUCTION — Deep Research is armed] " +
+            "Call deep_research_tools:orchestrate_research IMMEDIATELY " +
+            "with the user's message below as the query parameter. " +
+            "Do NOT ask the user for confirmation.\n\n" +
+            "--- USER MESSAGE ---\n" + originalText;
+
+        log("onMessageProcessing: injected auto-exec instruction");
+        return { matched: false, text: injectedText };
+    } catch (e) {
+        // fail-soft: never block message delivery
+        return { matched: false };
+    }
+}
+exports.onMessageProcessing = onMessageProcessing;
+
+// ═══════════════════════════════════════════════════════════
+// Layer 0: onSystemPromptCompose — auto-execution injection
+//
+// When AWAIT_INPUT_KEY is true (user has opened the menu toggle),
+// inject a system instruction telling the AI to call
+// orchestrate_research immediately with the user's message.
+//
+// This hook runs EVERY time the system prompt is composed.
+// It is NOT a filter — it returns injection text or null.
+// ═══════════════════════════════════════════════════════════
+function onSystemPromptCompose(event) {
+    try {
+        var payload = event.eventPayload || event;
+        // Only act at the correct prompt composition stage
+        var stage = payload.stage;
+        if (stage !== "after_compose_system_prompt") return null;
+
+        var context = getAppContext();
+        if (!context) return null;
+
+        var awaiting = Boolean(ApiPreferences.getFeatureToggleBlocking(
+            context, CONFIG.AWAIT_INPUT_KEY, false));
+
+        if (!awaiting) return null;
+
+        var currentPrompt = payload.systemPrompt || '';
+        // v4.4.2: SYSTEM OVERRIDE — unconditional auto-execution
+        var injection = "=== SYSTEM OVERRIDE — HIGHEST PRIORITY ===\n" +
+            "Deep Research is ARMED. You MUST obey these rules:\n" +
+            "1. Call deep_research_tools:orchestrate_research RIGHT NOW.\n" +
+            "2. Pass the user's message text as the query parameter.\n" +
+            "3. Do NOT ask for confirmation. Do NOT explain. Do NOT greet.\n" +
+            "4. Output NOTHING except the tool call.\n" +
+            "Violating any rule = TASK FAILURE.\n" +
+            "The toggle will close automatically after execution.";
+
+        return {
+            systemPrompt: currentPrompt ? currentPrompt + "\n\n" + injection : injection
+        };
+    } catch (e) {
+        return null;
+    }
+}
+exports.onSystemPromptCompose = onSystemPromptCompose;
+
+// ═══════════════════════════════════════════════════════════
+// Layer 0b: onPromptFinalize — last-chance SYSTEM injection
+//
+// Called at "before_send_to_model" — the final stage before
+// the prompt reaches the model. Appends a SYSTEM OVERRIDE
+// message at the END of preparedHistory for maximum priority.
+// plan_mode uses this pattern for its highest-priority injection.
+// ═══════════════════════════════════════════════════════════
+function onPromptFinalize(event) {
+    try {
+        var payload = event.eventPayload || event;
+        var stage = payload.stage;
+        if (stage !== "before_send_to_model") return null;
+
+        var context = getAppContext();
+        if (!context) return null;
+
+        var awaiting = Boolean(ApiPreferences.getFeatureToggleBlocking(
+            context, CONFIG.AWAIT_INPUT_KEY, false));
+        if (!awaiting) return null;
+
+        var preparedHistory = payload.preparedHistory;
+        if (!Array.isArray(preparedHistory)) return null;
+
+        var overrideMsg = {
+            kind: "SYSTEM",
+            content: "=== SYSTEM OVERRIDE — DO NOT IGNORE ===\n" +
+                "Call deep_research_tools:orchestrate_research NOW.\n" +
+                "Query = the user's last message. NO confirmation.\n" +
+                "NO text output. Tool call ONLY."
+        };
+
+        return {
+            preparedHistory: preparedHistory.concat([overrideMsg])
+        };
+    } catch (e) {
+        return null;
+    }
+}
+exports.onPromptFinalize = onPromptFinalize;
+
+// ═══════════════════════════════════════════════════════════
+// Layer 0c: onToolPromptCompose — tool whitelist enforcement
+//
+// Called at "filter_tool_prompt_items". When armed, restricts
+// the AI's available tools to ONLY orchestrate_research.
+// The AI has no other tool to call — forced single choice.
+// plan_mode uses this to remove file-operation tools.
+// ═══════════════════════════════════════════════════════════
+function onToolPromptCompose(event) {
+    try {
+        var payload = event.eventPayload || event;
+        var stage = payload.stage;
+        if (stage !== "filter_tool_prompt_items") return null;
+
+        var context = getAppContext();
+        if (!context) return null;
+
+        var awaiting = Boolean(ApiPreferences.getFeatureToggleBlocking(
+            context, CONFIG.AWAIT_INPUT_KEY, false));
+        if (!awaiting) return null;
+
+        var availableTools = payload.availableTools;
+        if (!Array.isArray(availableTools)) return null;
+
+        var TARGET_TOOL = "deep_research_tools:orchestrate_research";
+        var filtered = availableTools.filter(function(t) {
+            return (t && t.name === TARGET_TOOL);
+        });
+
+        log("onToolPromptCompose: restricted tools from " +
+            availableTools.length + " to " + filtered.length);
+
+        return { availableTools: filtered };
+    } catch (e) {
+        return null;
+    }
+}
+exports.onToolPromptCompose = onToolPromptCompose;
 
 // ═══════════════════════════════════════════════════════════
 // Registration (startup thread — NO Java calls)
@@ -226,7 +448,7 @@ var _registered = false;
 function registerToolPkg() {
     if (_registered) return true;
 
-    log("registerToolPkg start — v3.3.0");
+    log("registerToolPkg start — v4.4.2");
 
     try {
         ToolPkg.registerInputMenuTogglePlugin({
@@ -238,8 +460,52 @@ function registerToolPkg() {
         return false;
     }
 
+    // v4.4.2: SystemPromptComposeHook — inject auto-exec instruction when armed
+    try {
+        ToolPkg.registerSystemPromptComposeHook({
+            id:       "deep_research_system_prompt",
+            function: onSystemPromptCompose
+        });
+        log("registered: SystemPromptComposeHook (auto-exec injection)");
+    } catch (e) {
+        log("SystemPromptComposeHook registration failed: " + String(e));
+    }
+
+    // v4.4.2: MessageProcessingPlugin — message-level injection (backup)
+    try {
+        ToolPkg.registerMessageProcessingPlugin({
+            id:       "deep_research_message_processing",
+            function: onMessageProcessing
+        });
+        log("registered: MessageProcessingPlugin (backup trigger)");
+    } catch (e) {
+        log("MessageProcessingPlugin registration failed: " + String(e));
+    }
+
+    // v4.4.2: PromptFinalizeHook — last-chance SYSTEM override
+    try {
+        ToolPkg.registerPromptFinalizeHook({
+            id:       "deep_research_prompt_finalize",
+            function: onPromptFinalize
+        });
+        log("registered: PromptFinalizeHook (last-chance injection)");
+    } catch (e) {
+        log("PromptFinalizeHook registration failed: " + String(e));
+    }
+
+    // v4.4.2: ToolPromptComposeHook — tool whitelist enforcement
+    try {
+        ToolPkg.registerToolPromptComposeHook({
+            id:       "deep_research_tool_prompt",
+            function: onToolPromptCompose
+        });
+        log("registered: ToolPromptComposeHook (tool whitelist)");
+    } catch (e) {
+        log("ToolPromptComposeHook registration failed: " + String(e));
+    }
+
     _registered = true;
-    log("registered: InputMenuToggle (3-state: OFF→SUGGEST→FORCE→OFF)");
+    log("registered: InputMenuToggle (binary: OFF→FORCE, user states: OFF/READY/RUNNING)");
 
     // MessageProcessingPlugin intentionally NOT registered.
     // It's a filter API, not a modifier. We never intercept messages.
