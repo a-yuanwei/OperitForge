@@ -113,7 +113,7 @@ function onMessageProcessing(event) {
         var ctx = getAppContext(); if (!ctx) return { matched: false };
         if (!Boolean(ApiPreferences.getFeatureToggleBlocking(ctx, CONFIG.AWAIT_INPUT_KEY, false))) return { matched: false };
         var txt = payload.messageContent || '';
-        return { matched: false, text: "Call deepsight_v450_tools:orchestrate_research with query = \"" + txt + "\". No reply. Tool only." };
+        return { matched: false, text: "Call deepsight_tools:orchestrate_research with query = \"" + txt + "\". No reply. Tool only." };
     } catch (e) { return { matched: false }; }
 }
 exports.onMessageProcessing = onMessageProcessing;
@@ -122,7 +122,7 @@ function onSystemPromptCompose(event) {
     try {
         var payload = event.eventPayload || event;
         if (payload.stage !== "after_compose_system_prompt") return null;
-        var injection = "Deepsight is ARMED. Execute research pipeline.\nCall deepsight_v450_tools:orchestrate_research NOW.\nQuery = user message. No confirmation. No text.";
+        var injection = "Deepsight is ARMED. Execute research pipeline.\nCall deepsight_tools:orchestrate_research NOW.\nQuery = user message. No confirmation. No text.";
         return { systemPrompt: (payload.systemPrompt || '') + "\n\n" + injection };
     } catch (e) { return null; }
 }
@@ -135,7 +135,7 @@ function onPromptFinalize(event) {
         var ctx = getAppContext(); if (!ctx) return null;
         if (!Boolean(ApiPreferences.getFeatureToggleBlocking(ctx, CONFIG.AWAIT_INPUT_KEY, false))) return null;
         var ph = payload.preparedHistory; if (!Array.isArray(ph)) return null;
-        return { preparedHistory: ph.concat([{ kind: "SYSTEM", content: "=== SYSTEM OVERRIDE — Call deepsight_v450_tools:orchestrate_research NOW. Query = user's last message. Tool call ONLY." }]) };
+        return { preparedHistory: ph.concat([{ kind: "SYSTEM", content: "=== SYSTEM OVERRIDE — Call deepsight_tools:orchestrate_research NOW. Query = user's last message. Tool call ONLY." }]) };
     } catch (e) { return null; }
 }
 exports.onPromptFinalize = onPromptFinalize;
@@ -147,7 +147,7 @@ function onToolPromptCompose(event) {
         var ctx = getAppContext(); if (!ctx) return null;
         if (!Boolean(ApiPreferences.getFeatureToggleBlocking(ctx, CONFIG.AWAIT_INPUT_KEY, false))) return null;
         var tools = payload.availableTools; if (!Array.isArray(tools)) return null;
-        var T = "deepsight_v450_tools:orchestrate_research";
+        var T = "deepsight_tools:orchestrate_research";
         return { availableTools: tools.filter(function(t) { return t && t.name === T; }) };
     } catch (e) { return null; }
 }
