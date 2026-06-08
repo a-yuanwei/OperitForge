@@ -1,29 +1,29 @@
 {
   "schema_version": 1,
   "toolpkg_id": "deepsight",
-  "version": "4.4.3",
+  "version": "4.5.0",
   "main": "main.js",
   "display_name": {
-    "zh": "Deepsight v4.4.2",
-    "en": "Deepsight v4.4.2"
+    "zh": "Deepsight v4.5.0",
+    "en": "Deepsight v4.5.0"
   },
   "description": {
-    "zh": "菜单负责写请求，调度器负责消费，流水线负责执行，锁负责确保仅执行一次。14 阶段自动化研究流水线，15 条质量门控，中英双轨自适应搜索，双权威体系，六级置信度标记，因果链推演引擎。二进制菜单触发（OFF↔FORCE），五态 UI 反馈（OFF/READY/RUNNING/DONE/FAIL），持久互斥锁 + 60s 幂等保护。v3.7.0 新增 AI 探针 check_research_status（零参数·始终可调用），v3.8.0 追加 summary 字段提升可读性。支持计划模式集成。v4.4.2 修复 GatePolicy.enabledBy / resume_research 门控 / 冗余 JSON.parse 等多项缺陷。",
-    "en": "Menu writes requests, orchestrator consumes them, pipeline executes, and the lock guarantees exactly-once execution. 14-stage automated research pipeline, 15 quality gates, CN/EN dual-track adaptive search, dual-authority system, 6-level confidence tagging, and a causal-chain reasoning engine. Binary menu trigger (OFF↔FORCE), five-state UI feedback (OFF/READY/RUNNING/DONE/FAIL), persistent mutex + 60s idempotency guard. v3.7.0 adds AI probe check_research_status (zero params · always callable) returning structured status block. Plan-mode compatible. v4.4.2 fixes GatePolicy.enabledBy / resume_research toggle gate / redundant JSON.parse and more."
+    "zh": "v4.5.0：事件总线解耦 + 并行搜索 + O(n)去重 + 批量缓存 + 进度反馈 + FSM状态机。14 阶段自动化研究流水线，15 条质量门控，中英双轨自适应搜索，双权威体系，六级置信度标记，因果链推演引擎。",
+    "en": "v4.5.0: event bus decoupling + parallel search + O(n) dedup + batch cache + progress feedback + FSM state machine. 14-stage automated research pipeline."
   },
   "enabled_by_default": true,
   "subpackages": [
     {
-      "id": "deepsight_tools",
-      "entry": "deepsight.js",
+      "id": "deep_research_tools",
+      "entry": "deep_research_agent_v3_4.js",
       "enabled_by_default": true,
       "display_name": {
-        "zh": "Deepsight 工具 v4.4.2",
-        "en": "Deepsight Tools v4.4.2"
+        "zh": "深度搜索工具 v4.5.0",
+        "en": "DeepResearch Tools v4.5.0"
       },
       "description": {
         "zh": "12 个工具：check_research_status / resume_research / start_research / classify_authority / check_quality_gate / tag_confidence / deep_analyze / create_checkpoint / sync_to_plan / orchestrate_research / ingest_source / advance_search_round",
-        "en": "12 tools: check_research_status / resume_research / start_research / classify_authority / check_quality_gate / tag_confidence / deep_analyze / create_checkpoint / sync_to_plan / orchestrate_research / ingest_source / advance_search_round"
+        "en": "12 tools"
       }
     }
   ]
