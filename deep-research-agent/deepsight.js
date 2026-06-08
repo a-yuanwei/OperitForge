@@ -279,7 +279,7 @@ var ERROR = {
              // 1. Toggle gate
              if (spec.checkToggle) {
                  var gate = requireToggleOn();
-                 if (gate.blocked && gate.mode !== 'force') return gate;
+                 if (gate.blocked) return gate;
              }
              // 2. InputGuard — delegates to full _inputGuard (empty-string/empty-array aware)
              if (spec.params) {
@@ -348,15 +348,16 @@ var ERROR = {
     var _lastAdvancedRound = -1;
 
     function advanceSearchRound(sessionState) {
-        if (!sessionState || !sessionState.search) return;
+        if (!sessionState || !sessionState.search) return null;
         var sid = sessionState.sessionId;
         var currentRound = sessionState.search.rounds || 0;
-        if (sid === _lastAdvancedSession && currentRound === _lastAdvancedRound) return;
+        if (sid === _lastAdvancedSession && currentRound === _lastAdvancedRound) return sessionState;
         _lastAdvancedRound = currentRound;
         sessionState.search.rounds = currentRound + 1;
         sessionState.search.roundAdvances = (sessionState.search.roundAdvances || 0) + 1;
         _lastAdvancedSession = sid;
         Metrics.inc('searchRoundAdvances');
+        return sessionState;
     }
 
     var STAGE_CONFIG = {
@@ -905,14 +906,16 @@ var ERROR = {
     function profileTopic(query) {
         var p = { isTechnology: false, isPolicyRelevant: false, isCnRelevant: false, isControversial: false, needsRealTimeData: false };
         var l = query.toLowerCase();
-        var tk = ['ai','ml','llm','model','code','software','algorithm','data','cloud'];
+        var tk = ['ai','人工智能','ml','机器学习','dl','深度学习','llm','大模型','gpt','claude','gemini','chatgpt','copilot','agent','智能体','算法','algorithm','数据结构','compiler','编译','操作系统','os','kernel','进程','线程','并发','锁','内存','cache','cpu','gpu','npu','tpu','芯片','半导体','arm','x86','riscv','量子','quantum','code','编程','开发','python','java','javascript','typescript','go','rust','c++','swift','kotlin','前端','后端','全栈','api','rest','graphql','微服务','data','数据','数据库','database','sql','nosql','mysql','postgresql','mongodb','redis','elasticsearch','kafka','spark','hadoop','cloud','云','aws','azure','gcp','saas','paas','serverless','docker','kubernetes','devops','cicd','network','网络','security','安全','防火墙','firewall','加密','encryption','ssl','tls','https','vpn','proxy','cdn','dns','ddos','漏洞','cve','xss','csrf','认证','oauth','jwt','hardware','硬件','iot','物联网','传感器','机器人','robot','无人机','drone','自动驾驶','autopilot','lidar','雷达','摄像头','camera','blockchain','区块链','bitcoin','以太坊','crypto','defi','nft','dao','5g','6g','通信','telecom','基站','wifi','蓝牙','bluetooth','卫星','satellite','星链','starlink','软件','software','架构','architecture','重构','测试','testing','部署','deploy','发布','release','android','ios','app','小程序','移动端','flutter','react','游戏','game','unity','unreal','引擎','渲染','google','apple','microsoft','meta','amazon','netflix','tesla','nvidia','openai','华为','腾讯','阿里','百度','字节','美团','京东','拼多多','小米','大疆','商汤','蔚来','小鹏','理想','比亚迪'];
         for (var i = 0; i < tk.length; i++) { if (l.indexOf(tk[i]) !== -1) { p.isTechnology = true; break; } }
-        var pk = ['regulation','policy','law','compliance','standard','governance'];
+        var pk = ['政策','法规','法律','law','regulation','policy','compliance','合规','监管','立法','修正案','草案','审批','备案','注册','许可','牌照','国务院','发改委','商务部','工信部','央行','证监会','财政部','科技部','教育部','卫健委','国防部','外交部','公安部','联合国','who','imf','world bank','wto','g20','g7','brics','金砖','宪法','刑法','民法','行政法','经济法','劳动法','公司法','证券法','反垄断','知识产权','专利','商标','著作权','版权','gdpr','ccpa','数据安全','网络安全','货币政策','财政政策','产业政策','贸易政策','利率','准备金','融资','债券','股票','基金','期货','杠杆','社保','医保','养老','公积金','限购','房产税','增值税','消费税','关税','补贴','扶贫','脱贫','共同富裕','制裁','sanction','贸易战','脱钩','去风险','实体清单','出口管制','技术封锁'];
         for (var j = 0; j < pk.length; j++) { if (l.indexOf(pk[j]) !== -1) { p.isPolicyRelevant = true; break; } }
-        var ck = ['china','chinese','beijing'];
+        var ck = ['中国','中华','华夏','china','chinese','北京','上海','深圳','广州','杭州','成都','武汉','南京','天津','重庆','苏州','西安','长沙','华为','腾讯','阿里','百度','字节','美团','京东','拼多多','小米','大疆','比亚迪','格力','美的','海尔','中兴','联想','国产','自主','信创','国产化','去ioe','一带一路','中国制造','双循环','新基建','东数西算','碳中和','碳达峰','数字中国','智慧城市','乡村振兴','共同富裕','现代化','强国','复兴','中国梦','十四五','十五五','二十大','两会','全国人大','政协','中文','汉语','汉字','普通话','国学','儒家','道家','诗词','唐诗','宋词','明清小说','四大名著'];
         for (var k = 0; k < ck.length; k++) { if (l.indexOf(ck[k]) !== -1) { p.isCnRelevant = true; break; } }
         var ym = query.match(/20\d{2}/);
         if (ym && parseInt(ym[0]) >= 2025) p.needsRealTimeData = true;
+        var rt = ['股价','stock','price','行情','汇率','利率','指数','期货','期权','债券','基金','etf','黄金','gold','原油','oil','比特币','btc','新闻','news','快讯','breaking','最新','即时','实时','今天','today','刚刚','天气','weather','气温','降水','暴雨','台风','比分','score','冠军','champion','决赛'];
+        for (var r = 0; r < rt.length; r++) { if (l.indexOf(rt[r]) !== -1) { p.needsRealTimeData = true; break; } }
         return p;
     }
 
@@ -989,22 +992,6 @@ var ERROR = {
         // Only cache meaningful results (not Tier 4 unclassified with unknown authority)
         if (result.tier !== 4 || result.authority !== 'unknown') {
             CachePolicy.putAuthority(url, result);
-        }
-        // v4.5.1: heuristic boost for authoritative domains
-        if (result.tier === 4) {
-            var host = extractHost(url);
-            // Academic/government
-            if (host.indexOf('.edu') !== -1 || host.indexOf('.gov') !== -1) {
-                result = { tier: 2, level: 'tier2', label: 'Authoritative', score: 0.6, authority: host.indexOf('.gov') !== -1 ? 'government' : 'academic' };
-            }
-            // Chinese authoritative
-            else if (host.indexOf('baike.baidu.com') !== -1 || host.indexOf('zh.wikipedia.org') !== -1) {
-                result = { tier: 2, level: 'tier2', label: 'Encyclopedia', score: 0.55, authority: 'encyclopedia' };
-            }
-            // Known tech communities
-            else if (host.indexOf('csdn.net') !== -1 || host.indexOf('juejin.cn') !== -1 || host.indexOf('zhihu.com') !== -1) {
-                result = { tier: 3, level: 'tier3', label: 'Tech Community', score: 0.25, authority: 'ugc' };
-            }
         }
         return result;
     }
@@ -2267,9 +2254,9 @@ if (autoAdvance) {
         stage: 'SEARCH',
         impl: async function(params, ss) {
             var sessionState = ss;
-            advanceSearchRound(sessionState);
-            var rounds = (sessionState.search && sessionState.search.rounds) || 0;
-            return { success: true, rounds: rounds, message: 'Search round advanced to ' + rounds };
+            var nextState = advanceSearchRound(sessionState) || sessionState;
+            var rounds = (nextState && nextState.search && nextState.search.rounds) || 0;
+            return { success: true, rounds: rounds, sessionState: nextState, message: 'Search round advanced to ' + rounds };
         }
     });
 
