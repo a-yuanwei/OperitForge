@@ -1,20 +1,20 @@
 {
   "schema_version": 1,
-  "toolpkg_id": "deepsight",
-  "version": "4.5.0",
+  "toolpkg_id": "deepsight_v450",
+  "version": "4.5.1",
   "main": "main.js",
   "display_name": {
     "zh": "Deepsight v4.5.0",
     "en": "Deepsight v4.5.0"
   },
   "description": {
-    "zh": "v4.5.0：事件总线解耦 + 并行搜索 + O(n)去重 + 批量缓存 + 进度反馈 + FSM状态机。14 阶段自动化研究流水线，15 条质量门控，中英双轨自适应搜索，双权威体系，六级置信度标记，因果链推演引擎。",
-    "en": "v4.5.0: event bus decoupling + parallel search + O(n) dedup + batch cache + progress feedback + FSM state machine. 14-stage automated research pipeline."
+    "zh": "v4.5.0：事件总线解耦 + 并行搜索 + O(n)去重 + 批量缓存 + 进度反馈 + FSM状态机。14 阶段自动化研究流水线，15 条质量门控。",
+    "en": "v4.5.0: event bus decoupling + parallel search + O(n) dedup + batch cache + progress feedback + FSM state machine."
   },
   "enabled_by_default": true,
   "subpackages": [
     {
-      "id": "deep_research_tools",
+      "id": "deepsight_v450_tools",
       "entry": "deep_research_agent_v3_4.js",
       "enabled_by_default": true,
       "display_name": {
@@ -22,7 +22,7 @@
         "en": "DeepResearch Tools v4.5.0"
       },
       "description": {
-        "zh": "12 个工具：check_research_status / resume_research / start_research / classify_authority / check_quality_gate / tag_confidence / deep_analyze / create_checkpoint / sync_to_plan / orchestrate_research / ingest_source / advance_search_round",
+        "zh": "12 个工具",
         "en": "12 tools"
       }
     }
