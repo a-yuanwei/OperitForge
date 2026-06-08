@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "toolpkg_id": "deepsight",
-  "version": "4.4.2",
+  "version": "4.4.3",
   "main": "main.js",
   "display_name": {
     "zh": "Deepsight v4.4.2",
