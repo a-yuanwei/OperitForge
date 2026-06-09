@@ -61,7 +61,7 @@
 ## Reference
 
 - [CHANGELOG](CHANGELOG.md) — Version history
-- [Release Guide](RELEASE_GUIDE.m.md) — Publishing workflow
+- [Release Guide](RELEASE_GUIDE.md) — Publishing workflow
 - [GitHub Releases](https://github.com/a-yuanwei/OperitForge/releases) — All releases
 
 ---
