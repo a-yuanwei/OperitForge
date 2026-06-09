@@ -8,9 +8,9 @@
 
 ---
 
-## ✨ What's New in v4.5.1
+## What's New in v4.5.1
 
-- **Event Bus Decoupling** — Toggle ↔ Pipeline fully decoupled via EventBus
+- **Event Bus Decoupling** — Toggle to Pipeline fully decoupled via EventBus
 - **Parallel Search** — O(n) const/O(n) dedup with BatchCache
 - **FSM State Machine** — Robust pipeline with auto-recovery
 - **5 Hooks** — InputMenuToggle + SystemPromptCompose + MessageProcessing + PromptFinalize + ToolPromptCompose
@@ -19,10 +19,10 @@
 
 ---
 
-## 📦 Features
+## Features
 
 - **12 tools** — check_research_status / orchestrate_research / start_research / advance_search_round / ingest_source / classify_authority / check_quality_gate / tag_confidence / deep_analyze / create_checkpoint / sync_to_plan / resume_research
-- **14 stages** — INIT → QUERY_PLAN → SEARCH → FETCH → EXTRACT → AUTHORITY_CLASSIFY → CROSS_VALIDATE → GAP_DETECT → DEEP_ANALYZE → THESIS_BUILD → QUALITY_GATE → CONFIDENCE_TAG → COMPILE → OUTPUT
+- **14 stages** — INIT -> QUERY_PLAN -> SEARCH -> FETCH -> EXTRACT -> AUTHORITY_CLASSIFY -> CROSS_VALIDATE -> GAP_DETECT -> DEEP_ANALYZE -> THESIS_BUILD -> QUALITY_GATE -> CONFIDENCE_TAG -> COMPILE -> OUTPUT
 - **15 quality gates** — 7 pre-checks + 5 content reviews + 3 runtime validations
 - **5 Hooks** — InputMenuToggle + SystemPromptCompose + MessageProcessing + PromptFinalize + ToolPromptCompose
 - **Dual Authority** — dual-authority scoring with MIT inline classifier
@@ -34,17 +34,17 @@
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
-1. Download deepsight.toolpkg → Operit Packages
+1. Download deepsight.toolpkg -> Operit Packages
 2. Open Operit AI
-3. Toggle conversation to Deep Research (OFF → FORCE)
+3. Toggle conversation to Deep Research (OFF -> FORCE)
 4. Input research goal, AI auto-executes orchestrate_research
 5. Use the 12 pipeline tools to advance through stages
 
 ---
 
-## 📊 Performance
+## Performance
 
 | Metric | Value |
 |--------|-------|
@@ -58,10 +58,10 @@
 
 ---
 
-## 📚 Reference
+## Reference
 
 - [CHANGELOG](CHANGELOG.md) — Version history
-- [Release Guide](RELEASE_GUIDE.md) — Publishing workflow
+- [Release Guide](RELEASE_GUIDE.m.md) — Publishing workflow
 - [GitHub Releases](https://github.com/a-yuanwei/OperitForge/releases) — All releases
 
 ---
