@@ -1,0 +1,15 @@
+# Node.js
+#____________________________
+
+node_modules/
+bow___report-out/
+npm_debug_log/
+	# Operit artifacts
+*.toolpkg
+*.package
+
+# Operating System
+#____________________________
+
+.DS_Store
+.debug
